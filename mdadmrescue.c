@@ -97,13 +97,15 @@ static int hello_read(const char *path, char *buf, size_t size, off_t offset,
 		off_t stripe_chunk_offset = stripe_number * (off_t)chunk_size;
 		unsigned int raid5_rot = (unsigned int)(stripe_number % (off_t)number_of_drives);
 		unsigned int disk_sel = (((unsigned int)stripe_chunk_sel + (unsigned int)number_of_drives - (unsigned int)raid5_rot)) % (unsigned int)number_of_drives;
+		unsigned int disk_parity = (((unsigned int)(number_of_drives - 1) - (unsigned int)raid5_rot)) % (unsigned int)number_of_drives;
+		unsigned char ignore_block = 0;
 
 		chunk = stripe + ((size_t)disk_sel * (size_t)chunk_size);
 
 		size_t cando = (size_t)chunk_size - chunk_offset;
 		if (cando > size) cando = size;
 
-		fprintf(stderr,"chunk=%llu offset=%llu stripe=%llu sel=%llu stripeoffset=%llu raid5rot=%u disk=%u read=%zu\n",
+		fprintf(stderr,"chunk=%llu offset=%llu stripe=%llu sel=%llu stripeoffset=%llu raid5rot=%u disk=%u parity=%u read=%zu\n",
 			(unsigned long long)chunk_number,
 			(unsigned long long)chunk_offset,
 			(unsigned long long)stripe_number,
@@ -111,21 +113,57 @@ static int hello_read(const char *path, char *buf, size_t size, off_t offset,
 			(unsigned long long)stripe_chunk_offset,
 			(unsigned int)raid5_rot,
 			(unsigned int)disk_sel,
+			(unsigned int)disk_parity,
 			cando);
 
 		/* factor in data offset */
 		stripe_chunk_offset += (off_t)data_offset;
 
-		if (lseek(drive_fd[disk_sel],stripe_chunk_offset,SEEK_SET) != stripe_chunk_offset) {
-			fprintf(stderr,"lseek fail, drive %u\n",disk_sel);
-			break;
+		if (disk_sel == 0) {
+			fprintf(stderr,"Ignoring data block, will reconstruct from parity\n");
+			ignore_block = 1;
 		}
 
-		memset(chunk,0,chunk_size);
-		rd = read(drive_fd[disk_sel],chunk,chunk_size);
-		if (rd < chunk_size)
-			fprintf(stderr,"read error, drive %u\n",disk_sel);
+		if (!ignore_block) {
+			if (lseek(drive_fd[disk_sel],stripe_chunk_offset,SEEK_SET) != stripe_chunk_offset) {
+				fprintf(stderr,"lseek fail, drive %u\n",disk_sel);
+				break;
+			}
 
+			memset(chunk,0,chunk_size);
+			rd = read(drive_fd[disk_sel],chunk,chunk_size);
+			if (rd < chunk_size)
+				fprintf(stderr,"read error, drive %u\n",disk_sel);
+		}
+		else {
+			/* recreate from other disk and parity */
+			for (unsigned int d=0;d < number_of_drives;d++) {
+				if (d == disk_sel) continue;
+
+				if (lseek(drive_fd[d],stripe_chunk_offset,SEEK_SET) != stripe_chunk_offset) {
+					fprintf(stderr,"lseek fail, drive %u\n",disk_sel);
+					break;
+				}
+
+				assert(((d*chunk_size)+chunk_size) <= stripe_size);
+				memset(stripe+(d*chunk_size),0,chunk_size);
+				rd = read(drive_fd[d],stripe+(d*chunk_size),chunk_size);
+				if (rd < chunk_size)
+					fprintf(stderr,"read error, parity, drive %u\n",disk_sel);
+			}
+
+			unsigned char *parity = stripe+(disk_parity*chunk_size);
+
+			memcpy(chunk,parity,chunk_size);
+			for (unsigned int d=0;d < number_of_drives;d++) {
+				if (d == disk_parity || d == disk_sel) continue;
+
+				unsigned char *ss = stripe+(d*chunk_size);
+				for (unsigned int i=0;i < chunk_size;i++)
+					chunk[i] ^= ss[i];
+			}
+		}
+	
 		assert((chunk_offset+cando) <= (size_t)chunk_size);
 		memcpy(buf,chunk+chunk_offset,cando);
 
@@ -148,18 +186,18 @@ static struct fuse_operations hello_oper = {
 
 int main(int argc, char *argv[])
 {
-	drive_fd[0] = open("/dev/sda5",O_RDONLY);
+	drive_fd[0] = open("/dev/sda5",O_RDONLY); /* marked spare */
 	if (drive_fd[0] < 0) {
 		fprintf(stderr,"Cannot open drive 1: %s\n",strerror(errno));
 		return 1;
 	}
 	drive_fd[1] = open("/dev/sdb5",O_RDONLY);
-	if (drive_fd[0] < 0) {
+	if (drive_fd[1] < 0) {
 		fprintf(stderr,"Cannot open drive 2: %s\n",strerror(errno));
 		return 1;
 	}
 	drive_fd[2] = open("/dev/sdc5",O_RDONLY);
-	if (drive_fd[0] < 0) {
+	if (drive_fd[2] < 0) {
 		fprintf(stderr,"Cannot open drive 3: %s\n",strerror(errno));
 		return 1;
 	}
