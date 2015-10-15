@@ -119,7 +119,8 @@ static int hello_read(const char *path, char *buf, size_t size, off_t offset,
 		/* factor in data offset */
 		stripe_chunk_offset += (off_t)data_offset;
 
-		if (disk_sel == 0) {
+		/* in my case: I screwed up the raid by removing the drive, then zeroing the zeroblock, then re-adding. */
+		if (disk_sel == 0/* && stripe_chunk_offset < (64ULL << 30ULL)*//*64GB*/) {
 			fprintf(stderr,"Ignoring data block, will reconstruct from parity\n");
 			ignore_block = 1;
 		}
