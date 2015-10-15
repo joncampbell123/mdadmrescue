@@ -15,7 +15,7 @@ unsigned int			chunk_size = 512 * 1024;	// 512KB
 unsigned int			super_offset = 8 * 512;		// 8 sectors
 unsigned int			data_offset = 2048 * 512;	// 2048 sectors
 
-unsigned long long		raid_size = 3838825472ULL << 9ULL;
+unsigned long long		raid_size = (3838825472ULL * 2ULL) << 9ULL; // RAID-5 2 drives 2TB each
 
 unsigned int			number_of_drives = 3;
 
